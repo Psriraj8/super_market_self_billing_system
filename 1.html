@@ -1,0 +1,1155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Supermarket Self-Billing with Scanner</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; }
+    #login-container, #cart, #bill, #history-container, #store-container { box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1); }
+    #cart-items { max-height: 250px; overflow-y: auto; }
+    #reader {
+      width: 100%;
+      max-width: 500px;
+      margin: 20px auto;
+      border: 2px solid #ddd;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .scan-status {
+      text-align: center;
+      margin: 10px 0;
+      font-style: italic;
+      color: #666;
+    }
+    @keyframes slideIn {
+      from { transform: translateX(100%); }
+      to { transform: translateX(0); }
+    }
+    @keyframes fadeOut {
+      from { opacity: 1; }
+      to { opacity: 0; }
+    }
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background-color: #10B981;
+      color: white;
+      padding: 12px 24px;
+      border-radius: 4px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+      animation: slideIn 0.5s, fadeOut 0.5s 1.5s;
+      animation-fill-mode: forwards;
+      z-index: 1000;
+    }
+    #user-photo-container {
+      margin: 15px 0;
+      text-align: center;
+    }
+    #camera-view {
+      width: 100%;
+      max-width: 300px;
+      display: none;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+    }
+    #photo-preview {
+      display: none;
+      max-width: 200px;
+      margin: 10px auto;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+    }
+    #photo-canvas {
+      display: none;
+    }
+    #inventory-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    #inventory-table th, #inventory-table td {
+      border: 1px solid #ddd;
+      padding: 8px;
+      text-align: left;
+    }
+    #inventory-table tr:nth-child(even) {
+      background-color: #f2f2f2;
+    }
+    #inventory-table th {
+      background-color: #4CAF50;
+      color: white;
+    }
+    .low-stock {
+      color: #e53e3e;
+      font-weight: bold;
+    }
+    .store-selector {
+      position: absolute;
+      top: 4px;
+      left: 4px;
+      z-index: 100;
+    }
+    #search-results {
+      margin-top: 20px;
+      padding: 10px;
+      background-color: #f9fafb;
+      border-radius: 8px;
+    }
+    #search-results ul {
+      list-style: none;
+      padding: 0;
+    }
+    #search-results li {
+      padding: 10px;
+      border-bottom: 1px solid #ddd;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    #search-results li:last-child {
+      border-bottom: none;
+    }
+  </style>
+</head>
+<body class="bg-gray-100">
+
+  <!-- Login -->
+  <div id="login-container" class="bg-white p-6 rounded shadow-md w-full sm:w-1/3 mx-auto mt-20">
+    <h2 class="text-xl font-bold mb-4 text-center">Login</h2>
+    <input type="text" id="username" placeholder="Username" class="border p-2 w-full mb-2">
+    <input type="password" id="password" placeholder="Password" class="border p-2 w-full mb-2">
+    <button id="login-btn" class="bg-blue-500 text-white px-4 py-2 w-full">Login</button>
+  </div>
+
+  <!-- Main Content -->
+  <div id="main-content" class="hidden">
+    <div class="store-selector">
+      <select id="store-select" class="border p-2 rounded">
+        <option value="">Select Store</option>
+      </select>
+    </div>
+    
+    <h1 class="font-bold text-3xl text-center py-4">Supermarket Self-Billing</h1>
+    <button id="logout-btn" class="bg-red-500 text-white px-4 py-2 absolute top-4 right-4">Logout</button>
+    <button id="store-admin-btn" class="bg-purple-500 text-white px-4 py-2 absolute top-4 right-40 hidden">Store Admin</button>
+
+    <main class="container mx-auto p-4">
+      <!-- QR/Barcode Scanner -->
+      <div class="bg-white p-4 rounded shadow-md mt-4">
+        <h2 class="text-xl font-bold mb-4">Scanner</h2>
+        <div id="reader"></div>
+        <p class="scan-status" id="scanner-status">Scanner is ready</p>
+        
+        <div class="flex flex-wrap gap-2 mt-4">
+          <button id="start-scanner-btn" class="bg-green-500 text-white px-4 py-2 rounded">Start Scanner</button>
+          <button id="stop-scanner-btn" class="bg-red-500 text-white px-4 py-2 rounded" disabled>Stop Scanner</button>
+          <button id="manual-scan-btn" class="bg-blue-500 text-white px-4 py-2 rounded">Manual Barcode Entry</button>
+        </div>
+        
+        <div class="mt-4 p-3 bg-gray-50 rounded">
+          <p class="font-semibold">Last Scanned:</p>
+          <p id="last-scanned" class="text-green-600">Nothing scanned yet</p>
+        </div>
+
+        <!-- Product Search -->
+        <div class="mt-4 flex flex-col sm:flex-row items-center gap-2">
+          <input type="text" id="product-search-input" placeholder="Search product by name..." class="border p-2 rounded w-full sm:w-1/2">
+          <button id="product-search-btn" class="bg-indigo-600 text-white px-4 py-2 rounded w-full sm:w-auto">Search</button>
+        </div>
+        <div id="search-results" class="hidden">
+          <h3 class="text-lg font-semibold mb-2">Search Results</h3>
+          <ul id="search-results-list"></ul>
+        </div>
+      </div>
+
+      <!-- Cart -->
+      <section id="cart" class="bg-white p-4 rounded shadow-md mt-4">
+        <h2 class="text-xl font-bold mb-4">Your Cart</h2>
+        <ul id="cart-items" class="space-y-4"></ul>
+
+        <div class="mt-4 flex items-center gap-2">
+          <input type="text" id="promo-code" placeholder="Enter Promo Code" class="border p-2 rounded w-full sm:w-1/2">
+          <button id="apply-promo" class="bg-indigo-600 text-white px-4 py-2 rounded">Apply</button>
+        </div>
+
+        <p id="cart-total" class="text-right text-lg font-bold text-green-600 mt-4">Total: ₹0</p>
+
+        <button id="generate-bill" class="bg-green-500 text-white px-4 py-2 rounded mt-2">Generate Bill</button>
+        <button id="toggle-history" class="bg-gray-500 text-white px-4 py-2 rounded mt-2">Show Transaction History</button>
+      </section>
+
+      <!-- Bill -->
+      <section id="bill" class="bg-white p-4 rounded shadow-md mt-4 hidden">
+        <h2 class="text-xl font-bold mb-4">Your Bill</h2>
+        
+        <!-- Photo Capture Section -->
+        <div id="user-photo-container">
+          <video id="camera-view" autoplay playsinline></video>
+          <canvas id="photo-canvas"></canvas>
+          <img id="photo-preview" alt="Your photo will appear here">
+          <button id="capture-btn" class="bg-blue-500 text-white px-4 py-2 rounded">Take Photo</button>
+        </div>
+        
+        <p><strong>User:</strong> <span id="bill-username"></span></p>
+        <p><strong>Mobile Number:</strong> <span id="bill-mobile"></span></p>
+        <input type="tel" id="mobile-input" placeholder="Enter Mobile Number" class="border p-2 w-full mb-2" pattern="[0-9]{10}" title="Please enter a valid 10-digit mobile number">
+        <p><strong>Transaction ID:</strong> <span id="bill-transaction-id"></span></p>
+        <p><strong>Store:</strong> <span id="bill-store"></span></p>
+        <ul id="bill-items" class="space-y-4 mt-2"></ul>
+        <h3 class="text-lg font-bold mt-4">Choose Payment Method:</h3>
+        <select id="payment-method" class="border p-2 w-full mb-2">
+          <option value="upi">UPI</option>
+          <option value="card">Credit/Debit Card</option>
+        </select>
+        <button id="pay-now" class="bg-purple-500 text-white px-4 py-2 rounded w-full">Proceed to Pay</button>
+        <button id="print-bill" class="bg-blue-500 text-white px-4 py-2 rounded w-full mt-2">Print Bill</button>
+        <p id="payment-success" class="text-green-500 font-bold mt-2 hidden">Payment successful! 🎉</p>
+      </section>
+
+      <!-- Transaction History -->
+      <section id="history-container" class="bg-white p-4 rounded shadow-md mt-6 hidden">
+        <h2 class="text-xl font-bold mb-4">Transaction History</h2>
+        <div class="mb-4">
+          <label for="history-store-filter" class="mr-2">Filter by Store:</label>
+          <select id="history-store-filter" class="border p-2 rounded">
+            <option value="">All Stores</option>
+          </select>
+        </div>
+        <ul id="history-list" class="space-y-4 text-sm"></ul>
+      </section>
+
+      <!-- Store Admin Panel -->
+      <section id="store-container" class="bg-white p-4 rounded shadow-md mt-6 hidden">
+        <h2 class="text-xl font-bold mb-4">Store Admin Panel</h2>
+        
+        <div class="mb-6">
+          <h3 class="text-lg font-semibold mb-2">Inventory Management</h3>
+          <table id="inventory-table">
+            <thead>
+              <tr>
+                <th>Barcode</th>
+                <th>Product Name</th>
+                <th>Price</th>
+                <th>Stock</th>
+                <th>Category</th>
+                <th>Location</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="inventory-items">
+              <!-- Inventory items will be added here -->
+            </tbody>
+          </table>
+        </div>
+        
+        <div class="mb-6">
+          <h3 class="text-lg font-semibold mb-2">Add New Product</h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label class="block mb-1">Barcode</label>
+              <input type="text" id="new-barcode" class="border p-2 w-full rounded">
+            </div>
+            <div>
+              <label class="block mb-1">Product Name</label>
+              <input type="text" id="new-name" class="border p-2 w-full rounded">
+            </div>
+            <div>
+              <label class="block mb-1">Price (₹)</label>
+              <input type="number" id="new-price" class="border p-2 w-full rounded">
+            </div>
+            <div>
+              <label class="block mb-1">Initial Stock</label>
+              <input type="number" id="new-stock" class="border p-2 w-full rounded">
+            </div>
+            <div>
+              <label class="block mb-1">Category</label>
+              <input type="text" id="new-category" class="border p-2 w-full rounded">
+            </div>
+            <div>
+              <label class="block mb-1">Location (e.g., Aisle 1)</label>
+              <input type="text" id="new-location" class="border p-2 w-full rounded">
+            </div>
+            <div class="flex items-end">
+              <button id="add-product-btn" class="bg-green-500 text-white px-4 py-2 rounded">Add Product</button>
+            </div>
+          </div>
+        </div>
+        
+        <div>
+          <h3 class="text-lg font-semibold mb-2">Store Reports</h3>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+            <div class="bg-blue-50 p-4 rounded">
+              <h4 class="font-bold">Today's Sales</h4>
+              <p id="today-sales" class="text-2xl">₹0</p>
+            </div>
+            <div class="bg-green-50 p-4 rounded">
+              <h4 class="font-bold">Monthly Sales</h4>
+              <p id="monthly-sales" class="text-2xl">₹0</p>
+            </div>
+            <div class="bg-yellow-50 p-4 rounded">
+              <h4 class="font-bold">Low Stock Items</h4>
+              <p id="low-stock-count" class="text-2xl">0</p>
+            </div>
+          </div>
+          <button id="generate-report" class="bg-blue-500 text-white px-4 py-2 rounded">Generate Detailed Report</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    // Store management
+    const stores = {
+      "store1": { 
+        id: "store1", 
+        name: "SuperMart Downtown", 
+        location: "123 Main St", 
+        manager: "John Doe",
+        inventory: {
+          "123456": { name: "Banana", price: 20, stock: 50, category: "Fruits", location: "Aisle 1" },
+          "789012": { name: "Bread", price: 40, stock: 30, category: "Bakery", location: "Aisle 2" },
+          "345678": { name: "Rice", price: 60, stock: 25, category: "Grains", location: "Aisle 3" },
+          "901234": { name: "Mobile", price: 10000, stock: 5, category: "Electronics", location: "Aisle 4" },
+          "567890": { name: "Milk", price: 25, stock: 40, category: "Dairy", location: "Aisle 5" },
+          "123890": { name: "Eggs", price: 60, stock: 15, category: "Dairy", location: "Aisle 5" },
+          "456123": { name: "Chocolate", price: 50, stock: 20, category: "Snacks", location: "Aisle 6" }
+        }
+      },
+      "store2": { 
+        id: "store2", 
+        name: "SuperMart Uptown", 
+        location: "456 Oak Ave", 
+        manager: "Jane Smith",
+        inventory: {
+          "123456": { name: "Banana", price: 22, stock: 40, category: "Fruits", location: "Aisle 1" },
+          "789012": { name: "Bread", price: 42, stock: 25, category: "Bakery", location: "Aisle 2" },
+          "345678": { name: "Rice", price: 65, stock: 20, category: "Grains", location: "Aisle 3" },
+          "567890": { name: "Milk", price: 27, stock: 35, category: "Dairy", location: "Aisle 4" },
+          "123890": { name: "Eggs", price: 65, stock: 10, category: "Dairy", location: "Aisle 4" }
+        }
+      }
+    };
+
+    // User management
+    const users = { 
+      "admin": { password: "admin123", role: "admin" }, 
+      "user1": { password: "pass123", role: "customer" },
+      "manager1": { password: "manager123", role: "manager", store: "store1" },
+      "manager2": { password: "manager456", role: "manager", store: "store2" }
+    };
+    
+    let currentStore = localStorage.getItem("currentStore") || "";
+    let cart = JSON.parse(localStorage.getItem("cart")) || [];
+    let appliedDiscount = 0;
+    
+    // Scanner variables
+    let html5QrcodeScanner;
+    const scannerStatus = document.getElementById('scanner-status');
+    const lastScanned = document.getElementById('last-scanned');
+    const startScannerBtn = document.getElementById('start-scanner-btn');
+    const stopScannerBtn = document.getElementById('stop-scanner-btn');
+
+    // Camera variables
+    let userStream = null;
+    const cameraView = document.getElementById('camera-view');
+    const photoCanvas = document.getElementById('photo-canvas');
+    const photoPreview = document.getElementById('photo-preview');
+    const captureBtn = document.getElementById('capture-btn');
+
+    // Initialize store selector dropdown
+    function initStoreSelector() {
+      const storeSelect = document.getElementById('store-select');
+      const historyFilter = document.getElementById('history-store-filter');
+      
+      storeSelect.innerHTML = '<option value="">Select Store</option>';
+      historyFilter.innerHTML = '<option value="">All Stores</option>';
+      
+      for (const storeId in stores) {
+        const store = stores[storeId];
+        storeSelect.innerHTML += `<option value="${storeId}">${store.name}</option>`;
+        historyFilter.innerHTML += `<option value="${storeId}">${store.name}</option>`;
+      }
+      
+      if (currentStore) {
+        storeSelect.value = currentStore;
+      }
+    }
+
+    // Get current store's products
+    function getStoreProducts() {
+      if (!currentStore || !stores[currentStore]) return {};
+      return stores[currentStore].inventory || {};
+    }
+
+    // Login functionality
+    document.getElementById("login-btn").addEventListener("click", function () {
+      const username = document.getElementById("username").value;
+      const password = document.getElementById("password").value;
+      
+      if (users[username] && users[username].password === password) {
+        localStorage.setItem("loggedIn", "true");
+        localStorage.setItem("username", username);
+        localStorage.setItem("userRole", users[username].role);
+        
+        // If manager, set their store as current
+        if (users[username].role === "manager" && users[username].store) {
+          localStorage.setItem("currentStore", users[username].store);
+          currentStore = users[username].store;
+        }
+        
+        showMainContent();
+      } else {
+        alert("Invalid credentials!");
+      }
+    });
+
+    function showMainContent() {
+      document.getElementById("login-container").classList.add("hidden");
+      document.getElementById("main-content").classList.remove("hidden");
+      
+      // Show admin button if user is admin or manager
+      const role = localStorage.getItem("userRole");
+      if (role === "admin" || role === "manager") {
+        document.getElementById("store-admin-btn").classList.remove("hidden");
+      }
+      
+      initStoreSelector();
+      displayHistory();
+      updateCart();
+    }
+
+    if (localStorage.getItem("loggedIn")) showMainContent();
+
+    document.getElementById("logout-btn").addEventListener("click", function () {
+      localStorage.clear();
+      location.reload();
+    });
+
+    // Store selection handler
+    document.getElementById("store-select").addEventListener("change", function() {
+      currentStore = this.value;
+      localStorage.setItem("currentStore", currentStore);
+      
+      // Clear cart when changing stores
+      cart = [];
+      updateCart();
+      
+      // Clear search results
+      document.getElementById("search-results").classList.add("hidden");
+      document.getElementById("search-results-list").innerHTML = "";
+      
+      // Update UI based on selected store
+      if (currentStore) {
+        showToast(`Store set to: ${stores[currentStore].name}`);
+      }
+    });
+
+    // Product Search functionality
+    document.getElementById("product-search-btn").addEventListener("click", function() {
+      const query = document.getElementById("product-search-input").value.trim().toLowerCase();
+      if (!currentStore) {
+        alert("Please select a store first!");
+        return;
+      }
+      if (!query) {
+        alert("Please enter a product name to search!");
+        return;
+      }
+
+      const products = getStoreProducts();
+      const searchResults = Object.entries(products).filter(([barcode, product]) => 
+        product.name.toLowerCase().includes(query)
+      );
+
+      const resultsList = document.getElementById("search-results-list");
+      const resultsContainer = document.getElementById("search-results");
+      resultsList.innerHTML = "";
+
+      if (searchResults.length === 0) {
+        resultsList.innerHTML = "<li>No products found matching your search.</li>";
+        resultsContainer.classList.remove("hidden");
+        return;
+      }
+
+      searchResults.forEach(([barcode, product]) => {
+        const li = document.createElement("li");
+        li.innerHTML = `
+          <div>
+            <strong>${product.name}</strong><br>
+            Barcode: ${barcode}<br>
+            Price: ₹${product.price}<br>
+            Stock: ${product.stock}<br>
+            Location: ${product.location || 'Unknown'}
+          </div>
+          <button onclick="addToCartFromSearch('${barcode}')" class="bg-green-500 text-white px-2 py-1 rounded">Add to Cart</button>
+        `;
+        resultsList.appendChild(li);
+      });
+
+      resultsContainer.classList.remove("hidden");
+    });
+
+    // Add product to cart from search results
+    function addToCartFromSearch(barcode) {
+      const products = getStoreProducts();
+      if (products[barcode]) {
+        addToCart(products[barcode], barcode);
+      }
+    }
+
+    // Scanner functions
+    function startScanner() {
+      scannerStatus.textContent = "Starting scanner...";
+      startScannerBtn.disabled = true;
+      
+      if (!html5QrcodeScanner) {
+        html5QrcodeScanner = new Html5Qrcode("reader");
+      }
+
+      html5QrcodeScanner.start(
+        { facingMode: "environment" },
+        {
+          fps: 10,
+          qrbox: { width: 250, height: 250 },
+          rememberLastUsedCamera: true,
+          supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA]
+        },
+        qrCodeMessage => {
+          handleScannedCode(qrCodeMessage);
+        },
+        errorMessage => {
+          if (errorMessage.includes('NotAllowedError')) {
+            scannerStatus.textContent = "Camera access denied. Please enable camera permissions.";
+          } else {
+            scannerStatus.textContent = `Scanning... ${errorMessage}`;
+          }
+        }
+      ).then(() => {
+        scannerStatus.textContent = "Scanner is active - point at a QR/barcode";
+        stopScannerBtn.disabled = false;
+      }).catch(err => {
+        console.error("Start failed: ", err);
+        scannerStatus.textContent = `Error: ${err.message || 'Failed to start scanner'}`;
+        startScannerBtn.disabled = false;
+      });
+    }
+
+    function stopScanner() {
+      scannerStatus.textContent = "Stopping scanner...";
+      
+      if (html5QrcodeScanner) {
+        html5QrcodeScanner.stop().then(() => {
+          html5QrcodeScanner.clear();
+          html5QrcodeScanner = null;
+          scannerStatus.textContent = "Scanner stopped";
+          startScannerBtn.disabled = false;
+          stopScannerBtn.disabled = true;
+        }).catch(err => {
+          console.error("Stop failed: ", err);
+          scannerStatus.textContent = `Error stopping scanner: ${err.message}`;
+        });
+      } else {
+        scannerStatus.textContent = "No active scanner to stop";
+        startScannerBtn.disabled = false;
+        stopScannerBtn.disabled = true;
+      }
+    }
+
+    function handleScannedCode(code) {
+      lastScanned.textContent = code;
+      scannerStatus.textContent = "Scan successful!";
+      
+      // Auto-stop scanner after successful scan
+      stopScanner();
+      
+      // Add product to cart if found
+      const products = getStoreProducts();
+      if (products[code]) {
+        addToCart(products[code], code);
+        showToast(`Added: ${products[code].name} (Located in ${products[code].location})`);
+      } else {
+        alert("Product not found in store inventory!");
+      }
+    }
+
+    function manualBarcodeEntry() {
+      const barcode = prompt("Enter barcode manually:");
+      if (barcode && barcode.trim() !== "") {
+        handleScannedCode(barcode.trim());
+      }
+    }
+
+    // Camera functions
+    function startCamera() {
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false })
+        .then(stream => {
+          cameraView.srcObject = stream;
+          cameraView.style.display = 'block';
+          captureBtn.style.display = 'block';
+          photoPreview.style.display = 'none';
+          userStream = stream;
+        })
+        .catch(err => {
+          console.error("Camera error: ", err);
+          alert("Could not access the camera. You can proceed without photo.");
+        });
+    }
+
+    function capturePhoto() {
+      if (!userStream) {
+        alert("Camera not ready. Please try again.");
+        return;
+      }
+
+      const context = photoCanvas.getContext('2d');
+      photoCanvas.width = cameraView.videoWidth;
+      photoCanvas.height = cameraView.videoHeight;
+      context.drawImage(cameraView, 0, 0, photoCanvas.width, photoCanvas.height);
+
+      const imageData = photoCanvas.toDataURL('image/png');
+      photoPreview.src = imageData;
+      photoPreview.style.display = 'block';
+      cameraView.style.display = 'none';
+      captureBtn.style.display = 'none';
+      
+      // Store the photo in localStorage for printing
+      localStorage.setItem('userPhoto', imageData);
+      
+      // Stop the camera stream
+      userStream.getTracks().forEach(track => track.stop());
+      userStream = null;
+    }
+
+    // Cart management
+    function updateCart() {
+      localStorage.setItem("cart", JSON.stringify(cart));
+      const cartItems = document.getElementById("cart-items");
+      const cartTotal = document.getElementById("cart-total");
+      cartItems.innerHTML = "";
+
+      let total = 0;
+      cart.forEach((item, index) => {
+        const listItem = document.createElement("li");
+        listItem.className = "flex justify-between items-center";
+        listItem.innerHTML = `
+          <span>${item.name} (x${item.quantity}) - ₹${item.price * item.quantity} <br><small class="text-gray-500">Located in ${item.location || 'Unknown'}</small></span>
+          <div class="flex gap-2">
+            <button onclick="decreaseQuantity(${index})" class="bg-yellow-500 text-white px-2 py-1 rounded">-</button>
+            <button onclick="increaseQuantity(${index})" class="bg-green-500 text-white px-2 py-1 rounded">+</button>
+            <button onclick="removeItem(${index})" class="bg-red-500 text-white px-2 py-1 rounded">Remove</button>
+          </div>
+        `;
+        cartItems.appendChild(listItem);
+        total += item.price * item.quantity;
+      });
+
+      if (appliedDiscount > 0) {
+        total -= appliedDiscount;
+        cartItems.innerHTML += `<li class="text-blue-600">Discount Applied: -₹${appliedDiscount}</li>`;
+      }
+
+      if (cart.length === 0) {
+        cartItems.innerHTML = "<p class='text-gray-500'>Your cart is empty.</p>";
+      }
+
+      cartTotal.textContent = `Total: ₹${total}`;
+    }
+
+    function addToCart(product, barcode) {
+      if (!currentStore) {
+        alert("Please select a store first!");
+        return;
+      }
+      
+      // Check stock availability
+      const storeInventory = stores[currentStore].inventory;
+      if (storeInventory[barcode].stock <= 0) {
+        alert("This product is out of stock!");
+        return;
+      }
+      
+      const existing = cart.find(item => item.name === product.name);
+      if (existing) {
+        if (existing.quantity >= storeInventory[barcode].stock) {
+          alert("Cannot add more than available stock!");
+          return;
+        }
+        existing.quantity += 1;
+      } else {
+        cart.push({ ...product, quantity: 1, barcode: barcode });
+      }
+      updateCart();
+      showToast(`Added: ${product.name} (Located in ${product.location})`);
+    }
+
+    function showToast(message) {
+      const toast = document.createElement('div');
+      toast.className = 'toast';
+      toast.textContent = message;
+      document.body.appendChild(toast);
+      
+      setTimeout(() => {
+        toast.remove();
+      }, 2000);
+    }
+
+    function increaseQuantity(index) {
+      const barcode = cart[index].barcode;
+      const storeInventory = stores[currentStore].inventory;
+      
+      if (cart[index].quantity >= storeInventory[barcode].stock) {
+        alert("Cannot add more than available stock!");
+        return;
+      }
+      
+      cart[index].quantity += 1;
+      updateCart();
+    }
+
+    function decreaseQuantity(index) {
+      if (cart[index].quantity > 1) {
+        cart[index].quantity -= 1;
+      } else {
+        cart.splice(index, 1);
+      }
+      updateCart();
+    }
+
+    function removeItem(index) {
+      if (confirm("Are you sure you want to remove this item?")) {
+        cart.splice(index, 1);
+        updateCart();
+      }
+    }
+
+    // Billing functions
+    document.getElementById("generate-bill").addEventListener("click", function () {
+      if (cart.length === 0) return alert("Your cart is empty!");
+      if (!currentStore) return alert("Please select a store first!");
+
+      // Start camera when generating bill
+      startCamera();
+
+      const username = localStorage.getItem("username") || "Unknown User";
+      const transactionID = "TXN-" + Date.now();
+      const storeName = stores[currentStore].name;
+
+      document.getElementById("bill-username").textContent = username;
+      document.getElementById("bill-mobile").textContent = "";
+      document.getElementById("mobile-input").value = "";
+      document.getElementById("bill-transaction-id").textContent = transactionID;
+      document.getElementById("bill-store").textContent = storeName;
+
+      const billItems = document.getElementById("bill-items");
+      billItems.innerHTML = "";
+      let total = 0;
+
+      cart.forEach(item => {
+        const billItem = document.createElement("li");
+        billItem.innerHTML = `${item.name} (x${item.quantity}) - ₹${item.price * item.quantity} <br><small class="text-gray-500">Located in ${item.location || 'Unknown'}</small>`;
+        billItems.appendChild(billItem);
+        total += item.price * item.quantity;
+      });
+
+      if (appliedDiscount > 0) {
+        billItems.innerHTML += `<li>Discount Applied: -₹${appliedDiscount}</li>`;
+        total -= appliedDiscount;
+      }
+
+      billItems.innerHTML += `<li><strong>Total: ₹${total}</strong></li>`;
+      document.getElementById("bill").classList.remove("hidden");
+    });
+
+    // Capture photo button
+    document.getElementById("capture-btn").addEventListener("click", capturePhoto);
+
+    document.getElementById("pay-now").addEventListener("click", function () {
+      const method = document.getElementById("payment-method").value;
+      const mobileNumber = document.getElementById("mobile-input").value.trim();
+      
+      // Validate mobile number
+      if (!mobileNumber.match(/^[0-9]{10}$/)) {
+        alert("Please enter a valid 10-digit mobile number!");
+        return;
+      }
+
+      let valid = false;
+      
+      if (method === "upi") {
+        valid = prompt("Enter UPI ID (e.g. name@upi)");
+      } else if (method === "card") {
+        valid = prompt("Enter last 4 digits of card number");
+      }
+      
+      if (valid === null || valid === false) return alert("Payment cancelled!");
+
+      alert("Payment successful!");
+      document.getElementById("payment-success").classList.remove("hidden");
+
+      // Record transaction with photo and mobile number
+      const now = new Date();
+      const username = localStorage.getItem("username") || "Unknown";
+      const transactionID = "TXN-" + now.getTime();
+      const userPhoto = localStorage.getItem('userPhoto');
+      const history = JSON.parse(localStorage.getItem("transactions") || "[]");
+      const billSummary = cart.map(item => `${item.name} x${item.quantity} = ₹${item.price * item.quantity}`);
+      const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0) - appliedDiscount;
+
+      // Update inventory
+      cart.forEach(item => {
+        if (item.barcode && stores[currentStore].inventory[item.barcode]) {
+          stores[currentStore].inventory[item.barcode].stock -= item.quantity;
+        }
+      });
+
+      history.push({ 
+        username, 
+        transactionID, 
+        time: now.toLocaleString(), 
+        items: billSummary, 
+        total,
+        paymentMethod: method,
+        photo: userPhoto || null,
+        store: currentStore,
+        itemLocations: cart.map(item => item.location || 'Unknown'),
+        mobile: mobileNumber
+      });
+      localStorage.setItem("transactions", JSON.stringify(history));
+
+      // Update bill mobile display
+      document.getElementById("bill-mobile").textContent = mobileNumber;
+
+      // Clear cart, photo, and mobile input
+      cart = [];
+      appliedDiscount = 0;
+      localStorage.removeItem("cart");
+      localStorage.removeItem('userPhoto');
+      document.getElementById("mobile-input").value = "";
+      updateCart();
+      displayHistory();
+      
+      // Update inventory display if admin panel is open
+      if (!document.getElementById("store-container").classList.contains("hidden")) {
+        displayInventory();
+        updateStoreReports();
+      }
+    });
+
+    // Promo code
+    document.getElementById("apply-promo").addEventListener("click", function () {
+      const code = document.getElementById("promo-code").value.trim().toLowerCase();
+      if (code === "save10") {
+        appliedDiscount = 10;
+        showToast("Promo code applied: ₹10 off!");
+        updateCart();
+      } else {
+        alert("Invalid promo code.");
+      }
+    });
+
+    // History functions
+    function displayHistory() {
+      const historyList = document.getElementById("history-list");
+      const history = JSON.parse(localStorage.getItem("transactions") || "[]");
+      const storeFilter = document.getElementById("history-store-filter").value;
+      
+      historyList.innerHTML = "";
+      
+      // Filter by store if selected
+      const filteredHistory = storeFilter 
+        ? history.filter(entry => entry.store === storeFilter)
+        : history;
+      
+      filteredHistory.reverse().forEach(entry => {
+        const li = document.createElement("li");
+        li.className = "bg-gray-50 p-3 rounded";
+        
+        let photoHtml = '';
+        if (entry.photo) {
+          photoHtml = `<div class="mb-2"><img src="${entry.photo}" style="max-width:100px; border:1px solid #ddd;"></div>`;
+        }
+        
+        // Get store name
+        const storeName = entry.store ? stores[entry.store].name : 'Unknown Store';
+        
+        // Add location to items
+        const itemsWithLocation = entry.items.map((item, index) => {
+          const location = entry.itemLocations && entry.itemLocations[index] ? entry.itemLocations[index] : 'Unknown';
+          return `<li>• ${item} <small class="text-gray-500">(Located in ${location})</small></li>`;
+        });
+        
+        li.innerHTML = `
+          ${photoHtml}
+          <p><strong>${entry.time}</strong></p>
+          <p><strong>User:</strong> ${entry.username}</p>
+          <p><strong>Mobile:</strong> ${entry.mobile || 'Not provided'}</p>
+          <p><strong>Store:</strong> ${storeName}</p>
+          <p><strong>Transaction ID:</strong> ${entry.transactionID}</p>
+          <p><strong>Payment Method:</strong> ${entry.paymentMethod || 'Unknown'}</p>
+          <ul class='ml-4 mt-2'>${itemsWithLocation.join('')}</ul>
+          <p class="mt-2"><strong>Total: ₹${entry.total}</strong></p>
+        `;
+        historyList.appendChild(li);
+      });
+    }
+
+    document.getElementById("toggle-history").addEventListener("click", () => {
+      const container = document.getElementById("history-container");
+      container.classList.toggle("hidden");
+      document.getElementById("toggle-history").textContent = 
+        container.classList.contains("hidden") ? "Show Transaction History" : "Hide Transaction History";
+    });
+
+    document.getElementById("history-store-filter").addEventListener("change", displayHistory);
+
+    // Print bill
+    document.getElementById("print-bill").addEventListener("click", function () {
+      const billContent = document.getElementById("bill").innerHTML;
+      const userPhoto = localStorage.getItem('userPhoto');
+      const mobileNumber = document.getElementById("bill-mobile").textContent || 'Not provided';
+      const original = document.body.innerHTML;
+      
+      let photoHtml = '';
+      if (userPhoto) {
+        photoHtml = `<div class="text-center mb-4"><img src="${userPhoto}" style="max-width:200px; border:1px solid #ddd;"></div>`;
+      }
+      
+      document.body.innerHTML = `
+        <div class="p-4">
+          ${photoHtml}
+          ${billContent.replace('<input type="tel" id="mobile-input" placeholder="Enter Mobile Number" class="border p-2 w-full mb-2" pattern="[0-9]{10}" title="Please enter a valid 10-digit mobile number">', '')}
+        </div>
+      `;
+      window.print();
+      document.body.innerHTML = original;
+      location.reload();
+    });
+
+    // Store Admin Panel functions
+    document.getElementById("store-admin-btn").addEventListener("click", function() {
+      const username = localStorage.getItem("username");
+      const role = localStorage.getItem("userRole");
+
+      if (!username || !users[username]) {
+        alert("User not found.");
+        return;
+      }
+
+      const enteredPassword = prompt("Please re-enter your password to access Store Admin Panel:");
+      if (enteredPassword === users[username].password) {
+        const container = document.getElementById("store-container");
+        container.classList.toggle("hidden");
+
+        if (!container.classList.contains("hidden")) {
+          displayInventory();
+          updateStoreReports();
+        }
+      } else {
+        alert("Incorrect password. Access denied.");
+      }
+    });
+
+    function displayInventory() {
+      if (!currentStore) return;
+      
+      const inventoryItems = document.getElementById("inventory-items");
+      inventoryItems.innerHTML = "";
+      
+      const inventory = stores[currentStore].inventory;
+      
+      for (const barcode in inventory) {
+        const item = inventory[barcode];
+        const row = document.createElement("tr");
+        
+        // Highlight low stock items
+        const stockClass = item.stock < 5 ? "low-stock" : "";
+        
+        row.innerHTML = `
+          <td>${barcode}</td>
+          <td>${item.name}</td>
+          <td>₹${item.price}</td>
+          <td class="${stockClass}">${item.stock}</td>
+          <td>${item.category || '-'}</td>
+          <td>${item.location || '-'}</td>
+          <td>
+            <button onclick="editProduct('${barcode}')" class="bg-blue-500 text-white px-2 py-1 rounded text-sm">Edit</button>
+            <button onclick="deleteProduct('${barcode}')" class="bg-red-500 text-white px-2 py-1 rounded text-sm">Delete</button>
+          </td>
+        `;
+        inventoryItems.appendChild(row);
+      }
+    }
+
+    function editProduct(barcode) {
+      if (!currentStore) return;
+      
+      const item = stores[currentStore].inventory[barcode];
+      const newPrice = prompt("Enter new price:", item.price);
+      if (newPrice && !isNaN(newPrice)) {
+        item.price = parseFloat(newPrice);
+      }
+      
+      const newStock = prompt("Enter new stock quantity:", item.stock);
+      if (newStock && !isNaN(newStock)) {
+        item.stock = parseInt(newStock);
+      }
+      
+      const newCategory = prompt("Enter new category:", item.category || "");
+      if (newCategory !== null) {
+        item.category = newCategory;
+      }
+      
+      const newLocation = prompt("Enter new location (e.g., Aisle 1):", item.location || "");
+      if (newLocation !== null) {
+        item.location = newLocation;
+      }
+      
+      displayInventory();
+      updateStoreReports();
+    }
+
+    function deleteProduct(barcode) {
+      if (!currentStore) return;
+      
+      if (confirm(`Are you sure you want to delete ${stores[currentStore].inventory[barcode].name}?`)) {
+        delete stores[currentStore].inventory[barcode];
+        displayInventory();
+        updateStoreReports();
+      }
+    }
+
+    document.getElementById("add-product-btn").addEventListener("click", function() {
+      if (!currentStore) {
+        alert("Please select a store first!");
+        return;
+      }
+      
+      const barcode = document.getElementById("new-barcode").value.trim();
+      const name = document.getElementById("new-name").value.trim();
+      const price = parseFloat(document.getElementById("new-price").value);
+      const stock = parseInt(document.getElementById("new-stock").value);
+      const category = document.getElementById("new-category").value.trim();
+      const location = document.getElementById("new-location").value.trim();
+      
+      if (!barcode || !name || isNaN(price) || isNaN(stock)) {
+        alert("Please fill all required fields with valid values!");
+        return;
+      }
+      
+      // Check if barcode already exists
+      if (stores[currentStore].inventory[barcode]) {
+        alert("A product with this barcode already exists!");
+        return;
+      }
+      
+      // Add new product
+      stores[currentStore].inventory[barcode] = {
+        name: name,
+        price: price,
+        stock: stock,
+        category: category || "Uncategorized",
+        location: location || "Unknown"
+      };
+      
+      // Clear form
+      document.getElementById("new-barcode").value = "";
+      document.getElementById("new-name").value = "";
+      document.getElementById("new-price").value = "";
+      document.getElementById("new-stock").value = "";
+      document.getElementById("new-category").value = "";
+      document.getElementById("new-location").value = "";
+      
+      displayInventory();
+      updateStoreReports();
+      showToast(`Added new product: ${name}`);
+    });
+
+    function updateStoreReports() {
+      if (!currentStore) return;
+      
+      const history = JSON.parse(localStorage.getItem("transactions") || "[]");
+      const now = new Date();
+      const today = now.toLocaleDateString();
+      const thisMonth = now.getMonth() + 1 + "/" + now.getFullYear();
+      
+      // Calculate today's sales
+      const todaySales = history
+        .filter(txn => new Date(txn.time).toLocaleDateString() === today && txn.store === currentStore)
+        .reduce((sum, txn) => sum + txn.total, 0);
+      
+      // Calculate monthly sales
+      const monthlySales = history
+        .filter(txn => {
+          const txnDate = new Date(txn.time);
+          const txnMonth = txnDate.getMonth() + 1 + "/" + txnDate.getFullYear();
+          return txnMonth === thisMonth && txn.store === currentStore;
+        })
+        .reduce((sum, txn) => sum + txn.total, 0);
+      
+      // Count low stock items
+      const lowStockCount = Object.values(stores[currentStore].inventory)
+        .filter(item => item.stock < 5)
+        .length;
+      
+      document.getElementById("today-sales").textContent = `₹${todaySales}`;
+      document.getElementById("monthly-sales").textContent = `₹${monthlySales}`;
+      document.getElementById("low-stock-count").textContent = lowStockCount;
+    }
+
+    document.getElementById("generate-report").addEventListener("click", function() {
+      if (!currentStore) {
+        alert("Please select a store first!");
+        return;
+      }
+      
+      const history = JSON.parse(localStorage.getItem("transactions") || "[]");
+      const storeHistory = history.filter(txn => txn.store === currentStore);
+      
+      if (storeHistory.length === 0) {
+        alert("No transaction history found for this store!");
+        return;
+      }
+      
+      // Create CSV content
+      let csvContent = "Date,Transaction ID,Items,Locations,Total,Payment Method,Mobile\n";
+      
+      storeHistory.forEach(txn => {
+        const items = txn.items.join("; ");
+        const locations = txn.itemLocations ? txn.itemLocations.join("; ") : 'Unknown';
+        const mobile = txn.mobile || 'Not provided';
+        csvContent += `"${txn.time}","${txn.transactionID}","${items}","${locations}",${txn.total},"${txn.paymentMethod}","${mobile}"\n`;
+      });
+      
+      // Create download link
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.setAttribute("href", url);
+      link.setAttribute("download", `${stores[currentStore].name}_report_${new Date().toISOString().slice(0,10)}.csv`);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    });
+
+    // Event listeners for scanner buttons
+    document.getElementById("start-scanner-btn").addEventListener("click", startScanner);
+    document.getElementById("stop-scanner-btn").addEventListener("click", stopScanner);
+    document.getElementById("manual-scan-btn").addEventListener("click", manualBarcodeEntry);
+
+    // Clean up when leaving page
+    window.addEventListener('beforeunload', () => {
+      if (userStream) {
+        userStream.getTracks().forEach(track => track.stop());
+      }
+      if (html5QrcodeScanner) {
+        stopScanner();
+      }
+    });
+  </script>
+</body>
+</html>
